@@ -27,6 +27,7 @@ Run the following three commands inside Claude Code:
 ```
 /plugin marketplace add woosublee/claude-peek
 /plugin install claude-peek
+/reload-plugins
 /claude-peek:setup
 ```
 
