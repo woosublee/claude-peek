@@ -57,7 +57,7 @@ Usage ███░░░░░░░ 34% (1h 42m / 5h) │ ██████░
 #### 1. Clone the repo
 
 ```bash
-git clone https://github.com/woosublee/claude-peek.git ~/Documents/dev/claude-peek
+git clone https://github.com/woosublee/claude-peek.git ~/claude-peek
 ```
 
 #### 2. Update `~/.claude/settings.json`
@@ -66,7 +66,7 @@ git clone https://github.com/woosublee/claude-peek.git ~/Documents/dev/claude-pe
 {
   "statusLine": {
     "type": "command",
-    "command": "bash -c 'NODE=$(command -v node || echo /usr/local/bin/node); \"$NODE\" \"$HOME/Documents/dev/claude-peek/statusline.mjs\"'"
+    "command": "bash -c 'NODE=$(command -v node || echo /usr/local/bin/node); \"$NODE\" \"$HOME/claude-peek/statusline.mjs\"'"
   }
 }
 ```
