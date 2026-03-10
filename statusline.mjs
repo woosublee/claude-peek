@@ -2,7 +2,7 @@
 // ~/.claude/statusline.mjs — Custom Claude Code statusline
 import { createReadStream, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
 import { createInterface } from 'readline';
-import { execSync, execFileSync } from 'child_process';
+import { execSync, execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { request } from 'https';
 import { homedir } from 'os';
@@ -336,7 +336,29 @@ async function getUsage() {
   const cached = readUsageCache();
   if (cached) return cached;
 
-  // Lock (stale lock 자동 제거: 30초 이상 된 lock은 무시)
+  // 캐시 없음 → 백그라운드에서 fetch 후 즉시 null 반환
+  // (다음 메시지부터 캐시에서 읽힘)
+  try {
+    if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
+    // 이미 다른 프로세스가 fetching 중이면 skip
+    if (existsSync(LOCK_PATH)) {
+      try {
+        const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
+        if (lockAge <= 10_000) return null;
+        unlinkSync(LOCK_PATH);
+      } catch { return null; }
+    }
+    const child = spawn(process.execPath, [process.argv[1], '--bg-fetch'], {
+      detached: true, stdio: 'ignore',
+      env: { ...process.env, _CLAUDE_PEEK_BG: '1' },
+    });
+    child.unref();
+  } catch {}
+  return null;
+}
+
+async function bgFetch() {
+  // Lock (stale lock 자동 제거)
   let hasLock = false;
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
@@ -349,11 +371,7 @@ async function getUsage() {
     closeSync(fd);
     hasLock = true;
   } catch {
-    // Another process is fetching — return stale cache if any
-    try {
-      const c = JSON.parse(readFileSync(CACHE_PATH, 'utf-8'));
-      return c.data ?? null;
-    } catch { return null; }
+    return;
   }
 
   try {
@@ -386,6 +404,12 @@ async function getUsage() {
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
+if (process.argv.includes('--bg-fetch')) {
+  bgFetch().catch(() => {}).then(() => process.exit(0));
+} else {
+  main().catch(() => {});
+}
+
 async function main() {
   const stdin = await readStdin();
   if (!stdin) return;
@@ -490,5 +514,3 @@ async function main() {
     console.log(R + truncate(line3Parts.join(SEP), width));
   }
 }
-
-main().catch(() => {});
