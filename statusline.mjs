@@ -228,7 +228,8 @@ const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
 const CACHE_PATH  = join(PLUGIN_DIR, '.usage-cache.json');
 const LOCK_PATH   = join(PLUGIN_DIR, '.usage-cache.lock');
 const BACKOFF_PATH = join(PLUGIN_DIR, '.keychain-backoff');
-const FAILURE_TTL    = 15_000;
+const SUCCESS_TTL    = 60_000;
+const FAILURE_TTL    = 60_000;
 const KEYCHAIN_SVC   = 'Claude Code-credentials';
 
 function getPlanName(sub) {
@@ -245,7 +246,7 @@ function readUsageCache() {
   try {
     if (!existsSync(CACHE_PATH)) return null;
     const c = JSON.parse(readFileSync(CACHE_PATH, 'utf-8'));
-    const ttl = c.data?.apiUnavailable ? FAILURE_TTL : Infinity;
+    const ttl = c.data?.apiUnavailable ? FAILURE_TTL : SUCCESS_TTL;
     if (Date.now() - c.timestamp > ttl) return null;
     return c.data;
   } catch { return null; }
@@ -334,16 +335,28 @@ async function getUsage() {
 
   const cached = readUsageCache();
 
-  // 캐시 여부와 관계없이 항상 백그라운드 fetch 트리거
-  // (lock으로 중복 방지, Claude 응답 시간 동안 완료되어 다음 메시지엔 최신 데이터 표시)
+  // 캐시 없으면 인라인으로 직접 fetch (첫 실행 또는 TTL 만료 시)
+  if (!cached) {
+    // 다른 bg-fetch가 이미 실행 중이면 기다리지 않고 null 반환
+    if (existsSync(LOCK_PATH)) {
+      try {
+        const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
+        if (lockAge <= 10_000) return null;
+        unlinkSync(LOCK_PATH);
+      } catch { return null; }
+    }
+    return await bgFetch() ?? null;
+  }
+
+  // 캐시 있으면 bg-fetch로 갱신 (다음 메시지에 반영)
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
     if (existsSync(LOCK_PATH)) {
       try {
         const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
         if (lockAge > 10_000) unlinkSync(LOCK_PATH);
-        else { return cached ?? null; }
-      } catch { return cached ?? null; }
+        else return cached;
+      } catch { return cached; }
     }
     const child = spawn(process.execPath, [process.argv[1], '--bg-fetch'], {
       detached: true, stdio: 'ignore',
@@ -351,7 +364,7 @@ async function getUsage() {
     });
     child.unref();
   } catch {}
-  return cached ?? null;
+  return cached;
 }
 
 async function bgFetch() {
