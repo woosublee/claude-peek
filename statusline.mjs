@@ -228,7 +228,6 @@ const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
 const CACHE_PATH  = join(PLUGIN_DIR, '.usage-cache.json');
 const LOCK_PATH   = join(PLUGIN_DIR, '.usage-cache.lock');
 const BACKOFF_PATH = join(PLUGIN_DIR, '.keychain-backoff');
-const CACHE_TTL      = 60_000;
 const FAILURE_TTL    = 15_000;
 const KEYCHAIN_SVC   = 'Claude Code-credentials';
 
@@ -246,7 +245,7 @@ function readUsageCache() {
   try {
     if (!existsSync(CACHE_PATH)) return null;
     const c = JSON.parse(readFileSync(CACHE_PATH, 'utf-8'));
-    const ttl = c.data?.apiUnavailable ? FAILURE_TTL : CACHE_TTL;
+    const ttl = c.data?.apiUnavailable ? FAILURE_TTL : Infinity;
     if (Date.now() - c.timestamp > ttl) return null;
     return c.data;
   } catch { return null; }
@@ -334,19 +333,17 @@ async function getUsage() {
   }
 
   const cached = readUsageCache();
-  if (cached) return cached;
 
-  // 캐시 없음 → 백그라운드에서 fetch 후 즉시 null 반환
-  // (다음 메시지부터 캐시에서 읽힘)
+  // 캐시 여부와 관계없이 항상 백그라운드 fetch 트리거
+  // (lock으로 중복 방지, Claude 응답 시간 동안 완료되어 다음 메시지엔 최신 데이터 표시)
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
-    // 이미 다른 프로세스가 fetching 중이면 skip
     if (existsSync(LOCK_PATH)) {
       try {
         const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
-        if (lockAge <= 10_000) return null;
-        unlinkSync(LOCK_PATH);
-      } catch { return null; }
+        if (lockAge > 10_000) unlinkSync(LOCK_PATH);
+        else { return cached ?? null; }
+      } catch { return cached ?? null; }
     }
     const child = spawn(process.execPath, [process.argv[1], '--bg-fetch'], {
       detached: true, stdio: 'ignore',
@@ -354,7 +351,7 @@ async function getUsage() {
     });
     child.unref();
   } catch {}
-  return null;
+  return cached ?? null;
 }
 
 async function bgFetch() {
