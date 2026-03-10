@@ -14,11 +14,5 @@
     "context",
     "git",
     "todos"
-  ],
-  "skills": [
-    {
-      "name": "setup",
-      "description": "Configure claude-peek as your statusline"
-    }
   ]
 }
