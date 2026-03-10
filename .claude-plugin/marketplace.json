@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "A clean, compact statusline for Claude Code — context, usage, git, todos at a glance.",
-    "version": "0.1.3"
+    "version": "0.1.4"
   },
   "plugins": [
     {
