@@ -339,6 +339,7 @@ async function getUsage() {
   // Lock (stale lock 자동 제거: 30초 이상 된 lock은 무시)
   let hasLock = false;
   try {
+    if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
     try {
       const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
       if (lockAge > 10_000) unlinkSync(LOCK_PATH);
