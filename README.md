@@ -59,22 +59,6 @@ This detects the install path and automatically updates `statusLine` in `setting
 
 The statusline will appear on your next message.
 
-## Troubleshooting
-
-**Linux: cross-device link error during install**
-
-If you see a cross-device link error, set `TMPDIR` before launching Claude Code:
-
-```bash
-TMPDIR=~/.cache/tmp claude
-```
-
-This happens because `/tmp` often uses a separate filesystem on Linux.
-
-**Usage bar not showing**
-
-The usage bar requires a Claude Pro/Max/Team subscription and fetches data from Anthropic's OAuth API. API credentials are read from macOS Keychain or `~/.claude/.credentials.json`. If the bar doesn't appear after a few messages, check that you're logged in to Claude Code.
-
 ## Uninstall
 
 Remove the `statusLine` key from `~/.claude/settings.json`, or replace it with another statusline command.
