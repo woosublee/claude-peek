@@ -1,0 +1,13 @@
+{
+  "name": "claude-peek",
+  "version": "0.1.0",
+  "description": "A clean, compact statusline for Claude Code — context, usage, git, todos at a glance.",
+  "type": "module",
+  "main": "statusline.mjs",
+  "author": "classting",
+  "license": "MIT",
+  "keywords": ["claude", "statusline", "hud"],
+  "engines": {
+    "node": ">=18"
+  }
+}
