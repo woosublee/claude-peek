@@ -97,7 +97,7 @@ async function parseTranscript(path) {
         if (!Array.isArray(blocks)) continue;
         for (const b of blocks) {
           if (b.type === 'tool_use' && b.id) {
-            if (b.name === 'Task') {
+            if (b.name === 'Task' || b.name === 'Agent') {
               agentMap.set(b.id, { type: b.input?.subagent_type ?? 'agent', description: b.input?.description, status: 'running' });
             } else if (b.name === 'TodoWrite' && Array.isArray(b.input?.todos)) {
               latestTodos = [...b.input.todos];
@@ -123,8 +123,31 @@ async function parseTranscript(path) {
               }
             }
           }
-          if (b.type === 'tool_result' && b.tool_use_id && agentMap.has(b.tool_use_id))
-            agentMap.get(b.tool_use_id).status = 'completed';
+          if (b.type === 'tool_result' && b.tool_use_id && agentMap.has(b.tool_use_id)) {
+            const text = (Array.isArray(b.content) ? b.content : [])
+              .filter(c => c.type === 'text').map(c => c.text).join('');
+            if (text.includes('Async agent launched successfully')) {
+              // output_file 경로 추출 후 완료 여부 확인
+              const m = text.match(/output_file:\s*(\S+)/);
+              const outputFile = m ? m[1] : null;
+              let done = false;
+              if (outputFile && existsSync(outputFile)) {
+                try {
+                  const lines = readFileSync(outputFile, 'utf-8').trim().split('\n');
+                  for (let i = lines.length - 1; i >= 0; i--) {
+                    try {
+                      const last = JSON.parse(lines[i]);
+                      if (last.type === 'assistant' && last.message?.stop_reason === 'end_turn') { done = true; break; }
+                      if (last.type === 'assistant') break;
+                    } catch {}
+                  }
+                } catch {}
+              }
+              agentMap.get(b.tool_use_id).status = done ? 'completed' : 'running';
+            } else {
+              agentMap.get(b.tool_use_id).status = 'completed';
+            }
+          }
         }
       } catch {}
     }
