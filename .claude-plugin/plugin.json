@@ -1,0 +1,12 @@
+{
+  "name": "claude-peek",
+  "version": "0.1.0",
+  "description": "A clean, compact statusline for Claude Code — context, usage, git, todos at a glance.",
+  "author": "classting",
+  "skills": [
+    {
+      "name": "setup",
+      "description": "Configure claude-peek as your statusline"
+    }
+  ]
+}
