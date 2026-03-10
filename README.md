@@ -22,40 +22,13 @@ Usage ███░░░░░░░ 34% (1h 42m / 5h) │ ██████░
 
 ## Install
 
-#### 1. Add claude-peek as a known marketplace
-
-Add the following to `~/.claude/settings.json` (create the file if it doesn't exist):
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "claude-peek": {
-      "source": {
-        "source": "github",
-        "repo": "woosublee/claude-peek"
-      }
-    }
-  }
-}
-```
-
-If the file already has other settings, add only the `extraKnownMarketplaces` key alongside them.
-
-#### 2. Install the plugin inside Claude Code
+Run the following three commands inside Claude Code:
 
 ```
+/plugin marketplace add woosublee/claude-peek
 /plugin install claude-peek
-```
-
-This downloads the plugin from GitHub.
-
-#### 3. Configure the statusline
-
-```
 /claude-peek:setup
 ```
-
-This detects the install path and automatically updates `statusLine` in `settings.json`.
 
 The statusline will appear on your next message.
 
