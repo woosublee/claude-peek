@@ -40,6 +40,18 @@ Run the following commands in your terminal:
 rm -rf ~/.claude/plugins/cache/claude-peek
 rm -rf ~/.claude/plugins/marketplaces/claude-peek
 rm -rf ~/.claude/plugins/claude-peek
+
+python3 -c "
+import json
+for path, key, entry in [
+    ('$HOME/.claude/plugins/installed_plugins.json', 'plugins', 'claude-peek@claude-peek'),
+    ('$HOME/.claude/plugins/known_marketplaces.json', None, 'claude-peek'),
+]:
+    with open(path) as f: d = json.load(f)
+    if key: d[key].pop(entry, None)
+    else: d.pop(entry, None)
+    with open(path, 'w') as f: json.dump(d, f, indent=2)
+"
 ```
 
 Then remove the following keys from `~/.claude/settings.json`:
