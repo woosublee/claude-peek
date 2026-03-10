@@ -228,8 +228,9 @@ const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
 const CACHE_PATH  = join(PLUGIN_DIR, '.usage-cache.json');
 const LOCK_PATH   = join(PLUGIN_DIR, '.usage-cache.lock');
 const BACKOFF_PATH = join(PLUGIN_DIR, '.keychain-backoff');
-const SUCCESS_TTL    = 60_000;
-const FAILURE_TTL    = 60_000;
+const CACHE_TTL          = 60_000;   // 캐시 유효 시간 (60초)
+const RATE_LIMIT_BACKOFF = 300_000;  // 429 시 기본 block 시간 (5분)
+const ERROR_BACKOFF      = 30_000;   // 기타 에러 시 block 시간 (30초)
 const KEYCHAIN_SVC   = 'Claude Code-credentials';
 
 function getPlanName(sub) {
@@ -246,10 +247,34 @@ function readUsageCache() {
   try {
     if (!existsSync(CACHE_PATH)) return null;
     const c = JSON.parse(readFileSync(CACHE_PATH, 'utf-8'));
-    const ttl = c.data?.apiUnavailable ? FAILURE_TTL : SUCCESS_TTL;
-    if (Date.now() - c.timestamp > ttl) return null;
+    if (Date.now() - c.timestamp > CACHE_TTL) return null;
     return c.data;
   } catch { return null; }
+}
+
+function readStaleCache() {
+  try {
+    if (!existsSync(CACHE_PATH)) return null;
+    const c = JSON.parse(readFileSync(CACHE_PATH, 'utf-8'));
+    return c.data ?? null;
+  } catch { return null; }
+}
+
+function readLock() {
+  try {
+    if (!existsSync(LOCK_PATH)) return null;
+    const c = JSON.parse(readFileSync(LOCK_PATH, 'utf-8'));
+    if (Date.now() < c.blockedUntil) return c;
+    unlinkSync(LOCK_PATH);
+    return null;
+  } catch { return null; }
+}
+
+function writeLock(blockedUntil, error) {
+  try {
+    if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
+    writeFileSync(LOCK_PATH, JSON.stringify({ blockedUntil, error }), 'utf-8');
+  } catch {}
 }
 
 function writeUsageCache(data) {
@@ -316,12 +341,16 @@ function fetchUsageApi(accessToken) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
-        if (res.statusCode !== 200) return resolve(null);
-        try { resolve(JSON.parse(data)); } catch { resolve(null); }
+        if (res.statusCode === 429) {
+          const retryAfter = parseInt(res.headers['retry-after'] ?? '300', 10);
+          return resolve({ kind: 'rate-limited', retryAfter: isFinite(retryAfter) ? retryAfter : 300 });
+        }
+        if (res.statusCode !== 200) return resolve({ kind: 'error' });
+        try { resolve({ kind: 'success', data: JSON.parse(data) }); } catch { resolve({ kind: 'error' }); }
       });
     });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve({ kind: 'error' }));
+    req.on('timeout', () => { req.destroy(); resolve({ kind: 'error' }); });
     req.end();
   });
 }
@@ -333,83 +362,76 @@ async function getUsage() {
     try { if (new URL(base).origin !== 'https://api.anthropic.com') return null; } catch { return null; }
   }
 
+  // 1. 캐시 유효 → 즉시 반환 (bg-fetch 없음)
   const cached = readUsageCache();
+  if (cached) return cached;
 
-  // 캐시 없으면 인라인으로 직접 fetch (첫 실행 또는 TTL 만료 시)
-  if (!cached) {
-    // 다른 bg-fetch가 이미 실행 중이면 기다리지 않고 null 반환
-    if (existsSync(LOCK_PATH)) {
-      try {
-        const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
-        if (lockAge <= 10_000) return null;
-        unlinkSync(LOCK_PATH);
-      } catch { return null; }
-    }
-    return await bgFetch() ?? null;
-  }
+  // 2. 캐시 만료, lock 활성 → stale 캐시 반환 (API 호출 없음)
+  const lock = readLock();
+  if (lock) return readStaleCache();
 
-  // 캐시 있으면 bg-fetch로 갱신 (다음 메시지에 반영)
+  // 3. 캐시 없음(최초) → 인라인으로 직접 fetch
+  const stale = readStaleCache();
+  if (!stale) return await bgFetch() ?? null;
+
+  // 4. 캐시 만료, lock 없음 → bg-fetch spawn + stale 캐시 반환
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
-    if (existsSync(LOCK_PATH)) {
-      try {
-        const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
-        if (lockAge > 10_000) unlinkSync(LOCK_PATH);
-        else return cached;
-      } catch { return cached; }
-    }
     const child = spawn(process.execPath, [process.argv[1], '--bg-fetch'], {
       detached: true, stdio: 'ignore',
       env: { ...process.env, _CLAUDE_PEEK_BG: '1' },
     });
     child.unref();
   } catch {}
-  return cached;
+  return stale;
 }
 
 async function bgFetch() {
-  // Lock (stale lock 자동 제거)
-  let hasLock = false;
+  // 이미 fetch 중이면 건너뜀 (lock 파일 = 진행 중 표시)
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
-    try {
-      const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
-      if (lockAge > 10_000) unlinkSync(LOCK_PATH);
-    } catch {}
     const fd = openSync(LOCK_PATH, 'wx');
-    writeFileSync(fd, String(Date.now()), 'utf-8');
+    writeFileSync(fd, JSON.stringify({ blockedUntil: Date.now() + 15_000, error: 'in-progress' }), 'utf-8');
     closeSync(fd);
-    hasLock = true;
   } catch {
-    return;
+    return readStaleCache();
   }
 
   try {
     const creds = getCredentials();
-    if (!creds) return null;
+    if (!creds) { unlinkSync(LOCK_PATH); return readStaleCache(); }
 
     const planName = getPlanName(creds.subscriptionType);
-    if (!planName) return null;
+    if (!planName) { unlinkSync(LOCK_PATH); return readStaleCache(); }
 
-    const apiData = await fetchUsageApi(creds.accessToken);
-    if (!apiData) {
-      const fail = { planName, fiveHour: null, sevenDay: null, fiveHourResetAt: null, sevenDayResetAt: null, apiUnavailable: true };
-      writeUsageCache(fail);
-      return fail;
+    const res = await fetchUsageApi(creds.accessToken);
+
+    if (res.kind === 'rate-limited') {
+      writeLock(Date.now() + res.retryAfter * 1000, 'rate-limited');
+      return readStaleCache();
     }
 
+    if (res.kind === 'error') {
+      writeLock(Date.now() + ERROR_BACKOFF, 'error');
+      return readStaleCache();
+    }
+
+    // 성공
+    const apiData = res.data;
     const clamp = v => (v == null || !isFinite(v)) ? null : Math.round(Math.max(0, Math.min(100, v)));
     const result = {
       planName,
-      fiveHour:       clamp(apiData.five_hour?.utilization),
-      sevenDay:       clamp(apiData.seven_day?.utilization),
-      fiveHourResetAt:  apiData.five_hour?.resets_at ?? null,
-      sevenDayResetAt:  apiData.seven_day?.resets_at ?? null,
+      fiveHour:        clamp(apiData.five_hour?.utilization),
+      sevenDay:        clamp(apiData.seven_day?.utilization),
+      fiveHourResetAt: apiData.five_hour?.resets_at ?? null,
+      sevenDayResetAt: apiData.seven_day?.resets_at ?? null,
     };
     writeUsageCache(result);
+    try { unlinkSync(LOCK_PATH); } catch {}
     return result;
-  } finally {
-    if (hasLock) try { unlinkSync(LOCK_PATH); } catch {}
+  } catch {
+    writeLock(Date.now() + ERROR_BACKOFF, 'error');
+    return readStaleCache();
   }
 }
 
@@ -466,7 +488,7 @@ async function main() {
   const ctxPart = `${dim('Context')} ${coloredBar(pct)} ${ctxColor(pct)}${pct}%${R}`;
 
   let usagePart = '';
-  if (usage && !usage.apiUnavailable && usage.fiveHour != null) {
+  if (usage?.fiveHour != null) {
     const fiveHourColor = `${quotaColor(usage.fiveHour)}${usage.fiveHour}%${R}`;
     const fiveHourReset = formatResetTime(usage.fiveHourResetAt);
     const fiveHourBar = coloredBar(usage.fiveHour, quotaColor);
@@ -485,8 +507,6 @@ async function main() {
     } else {
       usagePart = `${dim('Usage')} ${fiveHourStr}`;
     }
-  } else if (usage?.apiUnavailable) {
-    usagePart = `${dim('Usage')} ${yellow('⚠')}`;
   }
 
   const line1 = [modelPart, projectPart, ctxPart].filter(Boolean).join(SEP);
