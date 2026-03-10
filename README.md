@@ -5,14 +5,14 @@ A clean, compact statusline for Claude Code — context, usage, git, and todos a
 ```
 [claude-sonnet-4-6 | Pro] │ my-project git:(main*) │ Context ████░░░░░░ 42%
 Usage ███░░░░░░░ 34% (1h 42m / 5h) │ ██████░░░░ 63% (2d 23h / 7d)
-⏱ 12m │ abstract-booping-sifakis │ 8 MCPs
+⏱ 12m │ abstract-booping-sifakis │ 8 MCPs │ ◐ running agent name
 ```
 
 ## Features
 
 - **Line 1**: Model, plan type, project name, git branch, context usage bar
 - **Line 2**: 5h session usage + 7d weekly usage with reset timers
-- **Line 3**: Session duration, session name, MCP/hook/todo counts
+- **Line 3**: Session duration, session name, MCP/hook/todo counts, running agents (`◐`)
 - **Graceful truncation**: Never drops a line — truncates with `…` on narrow terminals
 
 ## Requirements
@@ -22,9 +22,9 @@ Usage ███░░░░░░░ 34% (1h 42m / 5h) │ ██████░
 
 ## Install
 
-### Option A — Plugin (recommended)
+#### 1. Add claude-peek as a known marketplace
 
-#### 1. Register as a marketplace in `~/.claude/settings.json`
+Add the following to `~/.claude/settings.json` (create the file if it doesn't exist):
 
 ```json
 {
@@ -39,43 +39,25 @@ Usage ███░░░░░░░ 34% (1h 42m / 5h) │ ██████░
 }
 ```
 
-> If `~/.claude/settings.json` doesn't exist, create it. If it already has content, add only the `extraKnownMarketplaces` key alongside existing keys.
+If the file already has other settings, add only the `extraKnownMarketplaces` key alongside them.
 
-#### 2. Install and configure inside Claude Code
+#### 2. Install the plugin inside Claude Code
 
 ```
 /plugin install claude-peek
+```
+
+This downloads the plugin from GitHub.
+
+#### 3. Configure the statusline
+
+```
 /claude-peek:setup
 ```
 
-`/claude-peek:setup` will automatically find the installed plugin path and update `statusLine` in `settings.json`.
+This detects the install path and automatically updates `statusLine` in `settings.json`.
 
----
-
-### Option B — Manual (local clone)
-
-#### 1. Clone the repo
-
-```bash
-git clone https://github.com/woosublee/claude-peek.git ~/claude-peek
-```
-
-#### 2. Update `~/.claude/settings.json`
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "bash -c 'NODE=$(command -v node || echo /usr/local/bin/node); \"$NODE\" \"$HOME/claude-peek/statusline.mjs\"'"
-  }
-}
-```
-
-Adjust the path to match wherever you cloned the repo.
-
----
-
-The statusline will appear on your next message after either setup method.
+The statusline will appear on your next message.
 
 ## Troubleshooting
 
