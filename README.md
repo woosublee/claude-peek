@@ -34,7 +34,18 @@ The statusline will appear on your next message.
 
 ## Uninstall
 
-Remove the `statusLine` key from `~/.claude/settings.json`, or replace it with another statusline command.
+Run the following commands in your terminal:
+
+```bash
+rm -rf ~/.claude/plugins/cache/claude-peek
+rm -rf ~/.claude/plugins/marketplaces/claude-peek
+rm -rf ~/.claude/plugins/claude-peek
+```
+
+Then remove the following keys from `~/.claude/settings.json`:
+- `statusLine`
+- `extraKnownMarketplaces.claude-peek`
+- `enabledPlugins.claude-peek@claude-peek`
 
 ## Credits
 
