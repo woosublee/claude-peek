@@ -1,0 +1,20 @@
+{
+  "name": "claude-peek",
+  "owner": {
+    "name": "woosublee",
+    "email": ""
+  },
+  "metadata": {
+    "description": "A clean, compact statusline for Claude Code — context, usage, git, todos at a glance.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "claude-peek",
+      "source": "./",
+      "description": "A clean, compact statusline for Claude Code — context, usage, git, todos at a glance.",
+      "category": "monitoring",
+      "tags": ["statusline", "hud", "monitoring", "context", "git", "todos"]
+    }
+  ]
+}

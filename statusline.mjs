@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ~/.claude/statusline.mjs — Custom Claude Code statusline
-import { createReadStream, existsSync, readFileSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
+import { createReadStream, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
 import { createInterface } from 'readline';
 import { execSync, execFileSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -81,6 +81,7 @@ async function parseTranscript(path) {
   const result = { sessionName: null, sessionStart: null, agents: [], todos: [] };
   if (!path || !existsSync(path)) return result;
   const agentMap = new Map();
+  const taskIdToIndex = new Map();
   let latestTodos = [];
   let latestSlug = null, customTitle = null;
   try {
@@ -96,10 +97,31 @@ async function parseTranscript(path) {
         if (!Array.isArray(blocks)) continue;
         for (const b of blocks) {
           if (b.type === 'tool_use' && b.id) {
-            if (b.name === 'Task')
+            if (b.name === 'Task') {
               agentMap.set(b.id, { type: b.input?.subagent_type ?? 'agent', description: b.input?.description, status: 'running' });
-            else if (b.name === 'TodoWrite' && Array.isArray(b.input?.todos))
-              latestTodos = b.input.todos;
+            } else if (b.name === 'TodoWrite' && Array.isArray(b.input?.todos)) {
+              latestTodos = [...b.input.todos];
+              taskIdToIndex.clear();
+            } else if (b.name === 'TaskCreate') {
+              const subject = b.input?.subject ?? b.input?.description ?? 'Untitled task';
+              const status = normalizeTaskStatus(b.input?.status) ?? 'pending';
+              latestTodos.push({ content: subject, status });
+              const taskId = b.input?.taskId != null ? String(b.input.taskId) : b.id;
+              if (taskId) taskIdToIndex.set(taskId, latestTodos.length - 1);
+            } else if (b.name === 'TaskUpdate') {
+              const taskId = b.input?.taskId != null ? String(b.input.taskId) : null;
+              let idx = taskId != null ? taskIdToIndex.get(taskId) : null;
+              if (idx == null && taskId != null && /^\d+$/.test(taskId)) {
+                const n = parseInt(taskId, 10) - 1;
+                if (n >= 0 && n < latestTodos.length) idx = n;
+              }
+              if (idx != null) {
+                const status = normalizeTaskStatus(b.input?.status);
+                if (status) latestTodos[idx].status = status;
+                const content = b.input?.subject ?? b.input?.description;
+                if (content) latestTodos[idx].content = content;
+              }
+            }
           }
           if (b.type === 'tool_result' && b.tool_use_id && agentMap.has(b.tool_use_id))
             agentMap.get(b.tool_use_id).status = 'completed';
@@ -113,16 +135,30 @@ async function parseTranscript(path) {
   return result;
 }
 
+function normalizeTaskStatus(status) {
+  switch (status) {
+    case 'pending': case 'not_started': return 'pending';
+    case 'in_progress': case 'running': return 'in_progress';
+    case 'completed': case 'complete': case 'done': return 'completed';
+    default: return null;
+  }
+}
+
 // ── config counts ─────────────────────────────────────────────────────────────
 function getConfigCounts(cwd) {
   const home = homedir();
   const claudeDir = join(home, '.claude');
-  let claudeMdCount = 0, mcpCount = 0, hooksCount = 0;
+  let claudeMdCount = 0, rulesCount = 0, mcpCount = 0, hooksCount = 0;
   try {
     const us = JSON.parse(readFileSync(join(claudeDir, 'settings.json'), 'utf-8'));
     mcpCount += Object.keys(us.mcpServers ?? {}).length;
     hooksCount += Object.keys(us.hooks ?? {}).length;
     if (existsSync(join(claudeDir, 'CLAUDE.md'))) claudeMdCount++;
+  } catch {}
+  try {
+    const rulesDir = join(claudeDir, 'rules');
+    if (existsSync(rulesDir))
+      rulesCount += readdirSync(rulesDir).filter(f => f.endsWith('.md')).length;
   } catch {}
   if (cwd) {
     try { if (existsSync(join(cwd, 'CLAUDE.md'))) claudeMdCount++; } catch {}
@@ -136,7 +172,7 @@ function getConfigCounts(cwd) {
       mcpCount += Object.keys(mcp.mcpServers ?? {}).length;
     } catch {}
   }
-  return { claudeMdCount, mcpCount, hooksCount };
+  return { claudeMdCount, rulesCount, mcpCount, hooksCount };
 }
 
 // ── duration ──────────────────────────────────────────────────────────────────
@@ -165,10 +201,10 @@ function formatResetTime(resetAt) {
 
 // ── usage API ─────────────────────────────────────────────────────────────────
 const home = homedir();
-const HUD_PLUGIN_DIR = join(home, '.claude', 'plugins', 'claude-hud');
-const CACHE_PATH     = join(HUD_PLUGIN_DIR, '.usage-cache.json');
-const LOCK_PATH      = join(HUD_PLUGIN_DIR, '.usage-cache.lock');
-const BACKOFF_PATH   = join(HUD_PLUGIN_DIR, '.keychain-backoff');
+const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
+const CACHE_PATH  = join(PLUGIN_DIR, '.usage-cache.json');
+const LOCK_PATH   = join(PLUGIN_DIR, '.usage-cache.lock');
+const BACKOFF_PATH = join(PLUGIN_DIR, '.keychain-backoff');
 const CACHE_TTL      = 60_000;
 const FAILURE_TTL    = 15_000;
 const KEYCHAIN_SVC   = 'Claude Code-credentials';
@@ -195,7 +231,7 @@ function readUsageCache() {
 
 function writeUsageCache(data) {
   try {
-    if (!existsSync(HUD_PLUGIN_DIR)) mkdirSync(HUD_PLUGIN_DIR, { recursive: true });
+    if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
     writeFileSync(CACHE_PATH, JSON.stringify({ data, timestamp: Date.now() }), 'utf-8');
   } catch {}
 }
@@ -277,9 +313,13 @@ async function getUsage() {
   const cached = readUsageCache();
   if (cached) return cached;
 
-  // Lock
+  // Lock (stale lock 자동 제거: 30초 이상 된 lock은 무시)
   let hasLock = false;
   try {
+    try {
+      const lockAge = Date.now() - parseInt(readFileSync(LOCK_PATH, 'utf-8'), 10);
+      if (lockAge > 10_000) unlinkSync(LOCK_PATH);
+    } catch {}
     const fd = openSync(LOCK_PATH, 'wx');
     writeFileSync(fd, String(Date.now()), 'utf-8');
     closeSync(fd);
@@ -353,7 +393,7 @@ async function main() {
   ]);
 
   // config counts
-  const { claudeMdCount, mcpCount, hooksCount } = getConfigCounts(cwd);
+  const { claudeMdCount, rulesCount, mcpCount, hooksCount } = getConfigCounts(cwd);
 
   // ── 줄 1: [model | Plan] │ project git:(branch*) │ Context bar% ───────────
   const planDisplay = usage?.planName ? `${model} | ${usage.planName}` : model;
@@ -403,6 +443,7 @@ async function main() {
   if (dur) line3Parts.push(dim(`⏱ ${dur}`));
   if (tr.sessionName) line3Parts.push(dim(tr.sessionName));
   if (claudeMdCount > 0) line3Parts.push(dim(`${claudeMdCount} CLAUDE.md`));
+  if (rulesCount > 0)    line3Parts.push(dim(`${rulesCount} rules`));
   if (mcpCount > 0)      line3Parts.push(dim(`${mcpCount} MCPs`));
   if (hooksCount > 0)    line3Parts.push(dim(`${hooksCount} hooks`));
 

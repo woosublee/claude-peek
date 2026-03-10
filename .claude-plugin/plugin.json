@@ -2,7 +2,19 @@
   "name": "claude-peek",
   "version": "0.1.0",
   "description": "A clean, compact statusline for Claude Code — context, usage, git, todos at a glance.",
-  "author": "classting",
+  "author": {
+    "name": "woosublee"
+  },
+  "repository": "https://github.com/woosublee/claude-peek",
+  "license": "MIT",
+  "keywords": [
+    "statusline",
+    "hud",
+    "monitoring",
+    "context",
+    "git",
+    "todos"
+  ],
   "skills": [
     {
       "name": "setup",
