@@ -446,7 +446,10 @@ async function main() {
   const stdin = await readStdin();
   if (!stdin) return;
 
-  const width = process.stdout.columns || 80;
+  const width = process.stdout.columns || (() => {
+    try { return parseInt(execSync('tput cols', { stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }).toString().trim(), 10) || 80; }
+    catch { return 80; }
+  })();
 
   // 컨텍스트 %
   const pct = Math.min(100, Math.max(0, Math.round(
