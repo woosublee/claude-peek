@@ -228,9 +228,10 @@ const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
 const CACHE_PATH  = join(PLUGIN_DIR, '.usage-cache.json');
 const LOCK_PATH   = join(PLUGIN_DIR, '.usage-cache.lock');
 const BACKOFF_PATH = join(PLUGIN_DIR, '.keychain-backoff');
-const CACHE_TTL          = 60_000;   // 캐시 유효 시간 (60초)
-const RATE_LIMIT_BACKOFF = 300_000;  // 429 시 기본 block 시간 (5분)
-const ERROR_BACKOFF      = 30_000;   // 기타 에러 시 block 시간 (30초)
+const CACHE_TTL                 = 300_000;  // 캐시 유효 시간 (5분) — Anthropic usage API rate limit window
+const RATE_LIMIT_BACKOFF_BASE   =  60_000;  // 429 시 지수 백오프 기본 (60s → 120s → 240s → 300s)
+const RATE_LIMIT_BACKOFF_MAX    = 300_000;  // 429 최대 block 시간 (5분)
+const ERROR_BACKOFF             =  15_000;  // 기타 에러 시 block 시간 (15초)
 const KEYCHAIN_SVC   = 'Claude Code-credentials';
 
 function getPlanName(sub) {
@@ -270,11 +271,23 @@ function readLock() {
   } catch { return null; }
 }
 
-function writeLock(blockedUntil, error) {
+function getRateLimitBackoff(count) {
+  return Math.min(RATE_LIMIT_BACKOFF_BASE * Math.pow(2, Math.max(0, count - 1)), RATE_LIMIT_BACKOFF_MAX);
+}
+
+function writeLock(blockedUntil, error, extra = {}) {
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
-    writeFileSync(LOCK_PATH, JSON.stringify({ blockedUntil, error }), 'utf-8');
+    writeFileSync(LOCK_PATH, JSON.stringify({ blockedUntil, error, ...extra }), 'utf-8');
   } catch {}
+}
+
+function readRateLimitedCount() {
+  try {
+    if (!existsSync(LOCK_PATH)) return 0;
+    const c = JSON.parse(readFileSync(LOCK_PATH, 'utf-8'));
+    return (c.error === 'rate-limited' && c.rateLimitedCount > 0) ? c.rateLimitedCount : 0;
+  } catch { return 0; }
 }
 
 function writeUsageCache(data) {
@@ -407,7 +420,10 @@ async function bgFetch() {
     const res = await fetchUsageApi(creds.accessToken);
 
     if (res.kind === 'rate-limited') {
-      writeLock(Date.now() + res.retryAfter * 1000, 'rate-limited');
+      const prevCount = readRateLimitedCount();
+      const count = prevCount + 1;
+      const backoff = res.retryAfter ? res.retryAfter * 1000 : getRateLimitBackoff(count);
+      writeLock(Date.now() + backoff, 'rate-limited', { rateLimitedCount: count });
       return readStaleCache();
     }
 
