@@ -400,6 +400,9 @@ async function getUsage() {
 }
 
 async function bgFetch() {
+  // in-progress 락 생성 전에 이전 rate-limit 카운트를 먼저 읽어둠
+  const prevRateLimitCount = readRateLimitedCount();
+
   // 이미 fetch 중이면 건너뜀 (lock 파일 = 진행 중 표시)
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
@@ -420,7 +423,7 @@ async function bgFetch() {
     const res = await fetchUsageApi(creds.accessToken);
 
     if (res.kind === 'rate-limited') {
-      const prevCount = readRateLimitedCount();
+      const prevCount = prevRateLimitCount;
       const count = prevCount + 1;
       const backoff = res.retryAfter ? res.retryAfter * 1000 : getRateLimitBackoff(count);
       writeLock(Date.now() + backoff, 'rate-limited', { rateLimitedCount: count });
