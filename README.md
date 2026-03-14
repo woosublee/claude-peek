@@ -43,22 +43,25 @@ rm -rf ~/.claude/plugins/marketplaces/claude-peek
 rm -rf ~/.claude/plugins/claude-peek
 
 python3 -c "
-import json
+import json, os
+home = os.path.expanduser('~')
 for path, key, entry in [
-    ('$HOME/.claude/plugins/installed_plugins.json', 'plugins', 'claude-peek@claude-peek'),
-    ('$HOME/.claude/plugins/known_marketplaces.json', None, 'claude-peek'),
+    (home + '/.claude/plugins/installed_plugins.json', 'plugins', 'claude-peek@claude-peek'),
+    (home + '/.claude/plugins/known_marketplaces.json', None, 'claude-peek'),
 ]:
     with open(path) as f: d = json.load(f)
     if key: d[key].pop(entry, None)
     else: d.pop(entry, None)
     with open(path, 'w') as f: json.dump(d, f, indent=2)
+
+path = home + '/.claude/settings.json'
+with open(path) as f: d = json.load(f)
+d.pop('statusLine', None)
+d.get('enabledPlugins', {}).pop('claude-peek@claude-peek', None)
+d.get('extraKnownMarketplaces', {}).pop('claude-peek', None)
+with open(path, 'w') as f: json.dump(d, f, indent=2)
 "
 ```
-
-Then remove the following keys from `~/.claude/settings.json`:
-- `statusLine`
-- `extraKnownMarketplaces.claude-peek`
-- `enabledPlugins.claude-peek@claude-peek`
 
 ## Credits
 
