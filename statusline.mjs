@@ -286,6 +286,7 @@ function readRateLimitedCount() {
   try {
     if (!existsSync(LOCK_PATH)) return 0;
     const c = JSON.parse(readFileSync(LOCK_PATH, 'utf-8'));
+    if (c.blockedUntil && Date.now() >= c.blockedUntil) return 0;
     return (c.error === 'rate-limited' && c.rateLimitedCount > 0) ? c.rateLimitedCount : 0;
   } catch { return 0; }
 }
