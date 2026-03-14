@@ -228,6 +228,7 @@ const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
 const CACHE_PATH  = join(PLUGIN_DIR, '.usage-cache.json');
 const LOCK_PATH   = join(PLUGIN_DIR, '.usage-cache.lock');
 const BACKOFF_PATH = join(PLUGIN_DIR, '.keychain-backoff');
+const RATE_LIMIT_COUNT_PATH = join(PLUGIN_DIR, '.rate-limit-count');
 const CACHE_TTL                 = 300_000;  // 캐시 유효 시간 (5분) — Anthropic usage API rate limit window
 const RATE_LIMIT_BACKOFF_BASE   =  60_000;  // 429 시 지수 백오프 기본 (60s → 120s → 240s → 300s)
 const RATE_LIMIT_BACKOFF_MAX    = 300_000;  // 429 최대 block 시간 (5분)
@@ -275,20 +276,25 @@ function getRateLimitBackoff(count) {
   return Math.min(RATE_LIMIT_BACKOFF_BASE * Math.pow(2, Math.max(0, count - 1)), RATE_LIMIT_BACKOFF_MAX);
 }
 
-function writeLock(blockedUntil, error, extra = {}) {
+function writeLock(blockedUntil, error) {
   try {
     if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
-    writeFileSync(LOCK_PATH, JSON.stringify({ blockedUntil, error, ...extra }), 'utf-8');
+    writeFileSync(LOCK_PATH, JSON.stringify({ blockedUntil, error }), 'utf-8');
   } catch {}
 }
 
 function readRateLimitedCount() {
   try {
-    if (!existsSync(LOCK_PATH)) return 0;
-    const c = JSON.parse(readFileSync(LOCK_PATH, 'utf-8'));
-    if (c.blockedUntil && Date.now() >= c.blockedUntil) return 0;
-    return (c.error === 'rate-limited' && c.rateLimitedCount > 0) ? c.rateLimitedCount : 0;
+    if (!existsSync(RATE_LIMIT_COUNT_PATH)) return 0;
+    return parseInt(readFileSync(RATE_LIMIT_COUNT_PATH, 'utf-8'), 10) || 0;
   } catch { return 0; }
+}
+
+function writeRateLimitedCount(count) {
+  try {
+    if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
+    writeFileSync(RATE_LIMIT_COUNT_PATH, String(count), 'utf-8');
+  } catch {}
 }
 
 function writeUsageCache(data) {
@@ -424,10 +430,10 @@ async function bgFetch() {
     const res = await fetchUsageApi(creds.accessToken);
 
     if (res.kind === 'rate-limited') {
-      const prevCount = prevRateLimitCount;
-      const count = prevCount + 1;
+      const count = prevRateLimitCount + 1;
       const backoff = res.retryAfter ? res.retryAfter * 1000 : getRateLimitBackoff(count);
-      writeLock(Date.now() + backoff, 'rate-limited', { rateLimitedCount: count });
+      writeLock(Date.now() + backoff, 'rate-limited');
+      writeRateLimitedCount(count);
       return readStaleCache();
     }
 
@@ -447,6 +453,7 @@ async function bgFetch() {
       sevenDayResetAt: apiData.seven_day?.resets_at ?? null,
     };
     writeUsageCache(result);
+    writeRateLimitedCount(0);
     try { unlinkSync(LOCK_PATH); } catch {}
     return result;
   } catch {
