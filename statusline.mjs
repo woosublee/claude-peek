@@ -269,7 +269,7 @@ function readLock() {
     if (Date.now() < c.blockedUntil) return c;
     unlinkSync(LOCK_PATH);
     return null;
-  } catch { return null; }
+  } catch { try { unlinkSync(LOCK_PATH); } catch {} return null; }
 }
 
 function getRateLimitBackoff(count) {
