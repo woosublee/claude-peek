@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ~/.claude/statusline.mjs — Custom Claude Code statusline
-import { createReadStream, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
+import { createReadStream, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { execSync, execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
@@ -100,8 +100,29 @@ async function parseTranscript(path) {
             if (b.name === 'Task' || b.name === 'Agent') {
               agentMap.set(b.id, { type: b.input?.subagent_type ?? 'agent', description: b.input?.description, status: 'running' });
             } else if (b.name === 'TodoWrite' && Array.isArray(b.input?.todos)) {
+              const contentToTaskIds = new Map();
+              const taskIdsByOldIndex = [];
+              for (const [taskId, idx] of taskIdToIndex) {
+                if (idx < latestTodos.length) taskIdsByOldIndex.push([idx, taskId]);
+              }
+              taskIdsByOldIndex.sort((a, b) => a[0] - b[0]);
+              for (const [idx, taskId] of taskIdsByOldIndex) {
+                const content = latestTodos[idx].content;
+                const ids = contentToTaskIds.get(content) ?? [];
+                ids.push(taskId);
+                contentToTaskIds.set(content, ids);
+              }
+
               latestTodos = [...b.input.todos];
               taskIdToIndex.clear();
+              for (let i = 0; i < latestTodos.length; i++) {
+                const ids = contentToTaskIds.get(latestTodos[i].content);
+                if (ids && ids.length > 0) {
+                  const taskId = ids.shift();
+                  taskIdToIndex.set(taskId, i);
+                  if (ids.length === 0) contentToTaskIds.delete(latestTodos[i].content);
+                }
+              }
             } else if (b.name === 'TaskCreate') {
               const subject = b.input?.subject ?? b.input?.description ?? 'Untitled task';
               const status = normalizeTaskStatus(b.input?.status) ?? 'pending';
@@ -109,12 +130,7 @@ async function parseTranscript(path) {
               const taskId = b.input?.taskId != null ? String(b.input.taskId) : b.id;
               if (taskId) taskIdToIndex.set(taskId, latestTodos.length - 1);
             } else if (b.name === 'TaskUpdate') {
-              const taskId = b.input?.taskId != null ? String(b.input.taskId) : null;
-              let idx = taskId != null ? taskIdToIndex.get(taskId) : null;
-              if (idx == null && taskId != null && /^\d+$/.test(taskId)) {
-                const n = parseInt(taskId, 10) - 1;
-                if (n >= 0 && n < latestTodos.length) idx = n;
-              }
+              const idx = resolveTaskIndex(b.input?.taskId, taskIdToIndex, latestTodos);
               if (idx != null) {
                 const status = normalizeTaskStatus(b.input?.status);
                 if (status) latestTodos[idx].status = status;
@@ -156,6 +172,20 @@ async function parseTranscript(path) {
   result.agents = [...agentMap.values()];
   result.todos = latestTodos;
   return result;
+}
+
+function resolveTaskIndex(taskId, taskIdToIndex, latestTodos) {
+  if (typeof taskId === 'string' || typeof taskId === 'number') {
+    const key = String(taskId);
+    const mapped = taskIdToIndex.get(key);
+    if (typeof mapped === 'number') return mapped;
+
+    if (/^\d+$/.test(key)) {
+      const n = parseInt(key, 10) - 1;
+      if (n >= 0 && n < latestTodos.length) return n;
+    }
+  }
+  return null;
 }
 
 function normalizeTaskStatus(status) {
@@ -222,6 +252,53 @@ function formatResetTime(resetAt) {
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
+function clampPercent(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.round(Math.min(100, Math.max(0, value)));
+}
+
+function getTotalContextTokens(stdin) {
+  const usage = stdin.context_window?.current_usage;
+  return (
+    (usage?.input_tokens ?? 0) +
+    (usage?.cache_creation_input_tokens ?? 0) +
+    (usage?.cache_read_input_tokens ?? 0)
+  );
+}
+
+function getContextPercent(stdin) {
+  const nativePercent = stdin.context_window?.used_percentage;
+  if (typeof nativePercent === 'number' && Number.isFinite(nativePercent) && nativePercent > 0) {
+    return Math.min(100, Math.max(0, Math.round(nativePercent)));
+  }
+
+  const size = stdin.context_window?.context_window_size;
+  if (!size || size <= 0) return 0;
+  return Math.min(100, Math.round((getTotalContextTokens(stdin) / size) * 100));
+}
+
+function parseRateLimitResetAt(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return new Date(value * 1000).toISOString();
+}
+
+function getUsageFromStdin(stdin, planName = null) {
+  const rateLimits = stdin.rate_limits;
+  if (!rateLimits) return null;
+
+  const fiveHour = clampPercent(rateLimits.five_hour?.used_percentage);
+  const sevenDay = clampPercent(rateLimits.seven_day?.used_percentage);
+  if (fiveHour == null && sevenDay == null) return null;
+
+  return {
+    planName,
+    fiveHour,
+    sevenDay,
+    fiveHourResetAt: parseRateLimitResetAt(rateLimits.five_hour?.resets_at),
+    sevenDayResetAt: parseRateLimitResetAt(rateLimits.seven_day?.resets_at),
+  };
+}
+
 // ── usage API ─────────────────────────────────────────────────────────────────
 const home = homedir();
 const PLUGIN_DIR  = join(home, '.claude', 'plugins', 'claude-peek');
@@ -265,11 +342,33 @@ function readStaleCache() {
 function readLock() {
   try {
     if (!existsSync(LOCK_PATH)) return null;
-    const c = JSON.parse(readFileSync(LOCK_PATH, 'utf-8'));
-    if (Date.now() < c.blockedUntil) return c;
-    unlinkSync(LOCK_PATH);
+    const raw = readFileSync(LOCK_PATH, 'utf-8').trim();
+
+    try {
+      const c = JSON.parse(raw);
+      if (typeof c.blockedUntil === 'number' && Date.now() < c.blockedUntil) return c;
+      unlinkSync(LOCK_PATH);
+      return null;
+    } catch {
+      if (/^\d+$/.test(raw)) {
+        const ts = Number(raw);
+        if (Number.isFinite(ts) && Date.now() - ts < 30_000) {
+          return { blockedUntil: ts + 30_000, error: 'in-progress' };
+        }
+      }
+
+      const { mtimeMs } = statSync(LOCK_PATH);
+      if (Date.now() - mtimeMs < 30_000 && /^\s*\{\s*"blockedUntil"/.test(raw)) {
+        return { blockedUntil: Math.round(mtimeMs + 30_000), error: 'in-progress' };
+      }
+
+      unlinkSync(LOCK_PATH);
+      return null;
+    }
+  } catch {
+    try { unlinkSync(LOCK_PATH); } catch {}
     return null;
-  } catch { try { unlinkSync(LOCK_PATH); } catch {} return null; }
+  }
 }
 
 function getRateLimitBackoff(count) {
@@ -479,14 +578,7 @@ async function main() {
   })();
 
   // 컨텍스트 %
-  const pct = Math.min(100, Math.max(0, Math.round(
-    stdin.context_window?.used_percentage ?? (() => {
-      const u = stdin.context_window?.current_usage;
-      const sz = stdin.context_window?.context_window_size;
-      if (!sz) return 0;
-      return ((u?.input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0)) / sz * 100;
-    })()
-  )));
+  const pct = getContextPercent(stdin);
 
   // 모델 + 플랜
   const model = stdin.model?.display_name?.trim() ?? stdin.model?.id ?? 'Unknown';
@@ -497,10 +589,11 @@ async function main() {
   const git = getGit(cwd);
 
   // transcript + usage (병렬)
-  const [tr, usage] = await Promise.all([
+  const [tr, externalUsage] = await Promise.all([
     parseTranscript(stdin.transcript_path),
     getUsage(),
   ]);
+  const usage = getUsageFromStdin(stdin, externalUsage?.planName ?? null) ?? externalUsage;
 
   // config counts
   const { claudeMdCount, rulesCount, mcpCount, hooksCount } = getConfigCounts(cwd);
