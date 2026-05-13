@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ~/.claude/statusline.mjs — Custom Claude Code statusline
-import { createReadStream, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
+import { createReadStream, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { execSync, execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
@@ -350,10 +350,18 @@ function readLock() {
       unlinkSync(LOCK_PATH);
       return null;
     } catch {
-      const ts = parseInt(raw, 10);
-      if (Number.isFinite(ts) && Date.now() - ts < 30_000) {
-        return { blockedUntil: ts + 30_000, error: 'in-progress' };
+      if (/^\d+$/.test(raw)) {
+        const ts = Number(raw);
+        if (Number.isFinite(ts) && Date.now() - ts < 30_000) {
+          return { blockedUntil: ts + 30_000, error: 'in-progress' };
+        }
       }
+
+      const { mtimeMs } = statSync(LOCK_PATH);
+      if (Date.now() - mtimeMs < 30_000 && /^\s*\{\s*"blockedUntil"/.test(raw)) {
+        return { blockedUntil: Math.round(mtimeMs + 30_000), error: 'in-progress' };
+      }
+
       unlinkSync(LOCK_PATH);
       return null;
     }

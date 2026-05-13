@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -203,6 +203,66 @@ test('recovers from corrupt usage lock and keeps rendering stale usage cache', a
     assert.match(result.stdout, /Claude Sonnet 4\.6 \| Max/);
     assert.match(result.stdout, /44%/);
     assert.match(result.stdout, /88%/);
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    await removeHome(home);
+  }
+});
+
+test('treats recent partial usage locks as in-progress', async () => {
+  const home = await makeHome();
+  try {
+    const pluginDir = join(home, '.claude', 'plugins', 'claude-peek');
+    const cachePath = join(pluginDir, '.usage-cache.json');
+    const lockPath = join(pluginDir, '.usage-cache.lock');
+
+    await writeJson(cachePath, {
+      timestamp: Date.now() - 10 * 60 * 1000,
+      data: {
+        planName: 'Pro',
+        fiveHour: 22,
+        sevenDay: 55,
+        fiveHourResetAt: null,
+        sevenDayResetAt: null,
+      },
+    });
+    await writeFile(lockPath, '{"blockedUntil":', 'utf8');
+
+    const result = await runStatusline(baseStdin(), { home });
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /22%/);
+    assert.match(result.stdout, /55%/);
+    assert.equal(await readFile(lockPath, 'utf8'), '{"blockedUntil":');
+  } finally {
+    await removeHome(home);
+  }
+});
+
+test('removes numeric-looking garbage usage locks instead of treating prefixes as timestamps', async () => {
+  const home = await makeHome();
+  try {
+    const pluginDir = join(home, '.claude', 'plugins', 'claude-peek');
+    const cachePath = join(pluginDir, '.usage-cache.json');
+    const lockPath = join(pluginDir, '.usage-cache.lock');
+
+    await writeJson(cachePath, {
+      timestamp: Date.now() - 10 * 60 * 1000,
+      data: {
+        planName: 'Team',
+        fiveHour: 11,
+        sevenDay: 33,
+        fiveHourResetAt: null,
+        sevenDayResetAt: null,
+      },
+    });
+    await writeFile(lockPath, `${Date.now()}garbage`, 'utf8');
+
+    const result = await runStatusline(baseStdin(), { home });
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /11%/);
+    assert.match(result.stdout, /33%/);
     assert.equal(existsSync(lockPath), false);
   } finally {
     await removeHome(home);
