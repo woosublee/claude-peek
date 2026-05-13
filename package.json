@@ -7,6 +7,9 @@
   "author": "classting",
   "license": "MIT",
   "keywords": ["claude", "statusline", "hud"],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "engines": {
     "node": ">=18"
   }
